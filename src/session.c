@@ -6,6 +6,7 @@
 
 #include <dirent.h>
 #include <grp.h>
+#include <pwd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,24 +109,24 @@ int sf_session_launch(const sf_session_entry_t *session,
     /* Start a new session (detach from the greeter's controlling tty). */
     setsid();
 
+    /* Look up the username from the uid — needed for initgroups and
+     * for the USER env var. */
+    struct passwd *pw = getpwuid(auth->uid);
+    const char *username = pw ? pw->pw_name : "";
+
     /* Set up groups. */
-    initgroups(auth->home, auth->gid);
+    initgroups(username, auth->gid);
     setgid(auth->gid);
     setuid(auth->uid);
 
     /* Environment. */
     clearenv();
     setenv("HOME", auth->home, 1);
-    setenv("USER", auth->home, 1); /* fixed below */
+    setenv("USER", username, 1);
+    setenv("LOGNAME", username, 1);
     setenv("SHELL", auth->shell, 1);
     setenv("PATH", "/usr/local/bin:/usr/bin:/bin", 1);
     setup_xdg_runtime(auth->uid);
-
-    /* Fix USER — should be the username, not home dir.
-     * We can extract it from the session entry's context,
-     * but simpler to just re-read from the uid. */
-    struct passwd *pw = getpwuid(auth->uid);
-    if (pw) setenv("USER", pw->pw_name, 1);
 
     /* XDG_SESSION_TYPE for Wayland compositors. */
     setenv("XDG_SESSION_TYPE", "wayland", 1);

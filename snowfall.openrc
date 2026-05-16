@@ -1,20 +1,13 @@
 #!/sbin/openrc-run
 # snowfall — YetiOS graphical login manager
-#
-# Handoff from snowcone (boot splash):
-#   snowcone holds DRM master and does NOT detect master loss on its
-#   own (see comment in snowcone's main loop). The clean shutdown path
-#   is for the display manager to stop the snowcone service explicitly,
-#   which sends SIGTERM and lets snowcone restore the CRTC and drop the
-#   framebuffer before we try to claim it.
-#
-#   That stop happens in start_pre below, before snowfall is exec'd.
 
 name="snowfall"
 description="Snowfall login manager"
 command="/usr/local/sbin/snowfall"
 command_background=true
 pidfile="/run/snowfall.pid"
+output_log="/var/log/snowfall.log"
+error_log="/var/log/snowfall.log"
 
 depend() {
     need udev
@@ -23,17 +16,14 @@ depend() {
 }
 
 start_pre() {
-    # Ensure the wayland-sessions directory exists.
     checkpath -d /usr/share/wayland-sessions
+    checkpath -f -m 0644 /var/log/snowfall.log
 
-    # Stop the boot splash so it releases DRM master and restores
-    # the CRTC. Without this, snowcone keeps scanning out its own
-    # framebuffer and snowfall never appears on screen.
-    if rc-service -q -e snowcone; then
-        if rc-service snowcone status >/dev/null 2>&1; then
+    # Stop the boot splash so it releases DRM master.
+    if rc-service -e snowcone 2>/dev/null; then
+        if rc-service snowcone status 2>/dev/null | grep -q started; then
             ebegin "Stopping snowcone splash"
-            rc-service snowcone stop >/dev/null 2>&1
-            # Give the kernel a moment to settle the CRTC handoff.
+            rc-service snowcone stop 2>/dev/null
             sleep 1
             eend 0
         fi

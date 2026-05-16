@@ -33,10 +33,12 @@ static int parse_desktop_file(const char *path, sf_session_entry_t *out) {
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
         if (strncmp(line, "Name=", 5) == 0 && !got_name) {
-            snprintf(out->name, SF_NAME_LEN, "%s", line + 5);
+            out->name[0] = '\0';
+            strncat(out->name, line + 5, SF_NAME_LEN - 1);
             got_name = 1;
         } else if (strncmp(line, "Exec=", 5) == 0 && !got_exec) {
-            snprintf(out->exec, SF_EXEC_LEN, "%s", line + 5);
+            out->exec[0] = '\0';
+            strncat(out->exec, line + 5, SF_EXEC_LEN - 1);
             got_exec = 1;
         }
 

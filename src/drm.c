@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
@@ -26,6 +27,57 @@ static int find_drm_device(void) {
         snprintf(path, sizeof(path), "/dev/dri/card%d", i);
         int fd = open(path, O_RDWR | O_CLOEXEC);
         if (fd >= 0) return fd;
+    }
+    return -1;
+}
+
+/*
+ * Try to become DRM master, retrying briefly if another client (e.g. the
+ * outgoing snowcone splash) hasn't released the device yet.
+ *
+ * snowfall's initscript signals snowcone before starting us, but signal
+ * delivery + cleanup isn't instantaneous: snowcone needs to break out of
+ * its frame loop, unmap, RMFB, close. On a slow VM that can take 100ms+.
+ * Rather than have main.c bounce out and sleep 2s on every cold boot, we
+ * absorb that window here with short backoffs totalling ~2s worst case.
+ *
+ * Returns 0 on success, -1 if we still can't get master after retries.
+ */
+static int acquire_master(int fd) {
+    /* Backoff schedule: 20ms, 40ms, 80ms, 160ms, 320ms, 640ms, 1280ms.
+     * Total ~2.5s, biased toward fast resolution in the common case
+     * where snowcone is already half-gone. */
+    const int delays_ms[] = { 0, 20, 40, 80, 160, 320, 640, 1280 };
+    const int n_attempts = (int)(sizeof(delays_ms) / sizeof(delays_ms[0]));
+
+    for (int i = 0; i < n_attempts; i++) {
+        if (delays_ms[i] > 0) {
+            struct timespec ts = {
+                .tv_sec  = delays_ms[i] / 1000,
+                .tv_nsec = (long)(delays_ms[i] % 1000) * 1000000L,
+            };
+            nanosleep(&ts, NULL);
+        }
+
+        if (drmSetMaster(fd) == 0) {
+            if (i > 0)
+                fprintf(stderr,
+                        "snowfall: acquired DRM master after %d attempt(s)\n",
+                        i + 1);
+            return 0;
+        }
+        if (errno == EALREADY) return 0; /* already ours */
+
+        /* EPERM/EACCES = someone else is master; EINVAL/ENOSYS = old
+         * kernel that doesn't gate master, treat as success. */
+        if (errno == EINVAL || errno == ENOSYS) return 0;
+
+        if (i == n_attempts - 1) {
+            fprintf(stderr,
+                    "snowfall: drmSetMaster failed after %d attempts: %s\n",
+                    n_attempts, strerror(errno));
+            return -1;
+        }
     }
     return -1;
 }
@@ -86,10 +138,21 @@ int sf_drm_open(sf_drm_t *d) {
         return -1;
     }
 
-    /* Grab master so snowcone detects the loss and exits. */
-    if (drmSetMaster(d->fd) < 0 && errno != EALREADY) {
-        fprintf(stderr, "snowfall: drmSetMaster: %s\n", strerror(errno));
-        /* Non-fatal: we might already be master. */
+    /*
+     * Grab master before any mode-setting work. Without master,
+     * drmModeSetCrtc later will silently fail and we'll end up with
+     * a valid framebuffer that the kernel refuses to display — the
+     * "stuck on splash" symptom.
+     *
+     * Treat failure as fatal. main.c's outer loop will sleep and
+     * retry, by which time OpenRC should have stopped snowcone (or
+     * snowcone's own master-loss watchdog will have made it exit).
+     */
+    if (acquire_master(d->fd) < 0) {
+        fprintf(stderr,
+                "snowfall: could not acquire DRM master "
+                "(is snowcone still running?)\n");
+        goto fail;
     }
 
     drmModeRes *res = drmModeGetResources(d->fd);
@@ -156,6 +219,15 @@ int sf_drm_open(sf_drm_t *d) {
         fprintf(stderr, "snowfall: mmap: %s\n", strerror(errno));
         goto fail;
     }
+
+    /*
+     * Paint the buffer black before we hand it to the CRTC. The dumb
+     * buffer's initial contents are undefined; without this, scanout
+     * activates on uninitialized memory and you'll see a flash of
+     * garbage for one frame between snowcone exiting and our first
+     * sf_render() call.
+     */
+    memset(d->pixels, 0, (size_t)d->size);
 
     /* Set CRTC. */
     if (drmModeSetCrtc(d->fd, d->crtc_id, d->fb_id, 0, 0,

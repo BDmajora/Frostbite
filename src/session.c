@@ -24,21 +24,38 @@ static int parse_desktop_file(const char *path, sf_session_entry_t *out) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
 
-    char line[512];
+    /* Read into a buffer sized to the largest destination field
+     * (plus room for the "Exec=" prefix and a NUL). Any line longer
+     * than this is rejected outright — we won't silently truncate a
+     * session name or exec command. */
+    char line[SF_EXEC_LEN + 8];
     int got_name = 0, got_exec = 0;
 
     while (fgets(line, sizeof(line), f)) {
-        /* Strip trailing newline. */
         size_t len = strlen(line);
-        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
-        if (strncmp(line, "Name=", 5) == 0 && !got_name) {
-            out->name[0] = '\0';
-            strncat(out->name, line + 5, SF_NAME_LEN - 1);
+        /* If the line didn't fit in the buffer (no trailing newline
+         * and we're not at EOF), drain the rest and skip it. */
+        if (len > 0 && line[len - 1] != '\n' && !feof(f)) {
+            int c;
+            while ((c = fgetc(f)) != EOF && c != '\n') { }
+            continue;
+        }
+
+        /* Strip trailing newline. */
+        if (len > 0 && line[len - 1] == '\n') {
+            line[--len] = '\0';
+        }
+
+        if (!got_name && strncmp(line, "Name=", 5) == 0) {
+            const char *val = line + 5;
+            if (strlen(val) >= SF_NAME_LEN) continue; /* too long, skip */
+            strcpy(out->name, val);
             got_name = 1;
-        } else if (strncmp(line, "Exec=", 5) == 0 && !got_exec) {
-            out->exec[0] = '\0';
-            strncat(out->exec, line + 5, SF_EXEC_LEN - 1);
+        } else if (!got_exec && strncmp(line, "Exec=", 5) == 0) {
+            const char *val = line + 5;
+            if (strlen(val) >= SF_EXEC_LEN) continue; /* too long, skip */
+            strcpy(out->exec, val);
             got_exec = 1;
         }
 

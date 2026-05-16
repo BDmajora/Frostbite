@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+# snowfall — YetiOS graphical login manager
+
+name="snowfall"
+description="Snowfall login manager"
+command="/usr/local/sbin/snowfall"
+command_background=true
+pidfile="/run/snowfall.pid"
+
+depend() {
+    need udev
+    # snowfall grabs DRM master, which causes snowcone (boot splash)
+    # to detect master loss and exit. No explicit 'after snowcone'
+    # is needed — the DRM master handoff handles it.
+    after snowcone
+    before local
+}
+
+start_pre() {
+    # Ensure the wayland-sessions directory exists.
+    checkpath -d /usr/share/wayland-sessions
+}

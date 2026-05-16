@@ -1,0 +1,9 @@
+# /etc/pam.d/snowfall — PAM config for the Snowfall login manager.
+#
+# Uses the system default auth/account/session stack.
+
+auth       required   pam_unix.so     try_first_pass
+account    required   pam_unix.so
+session    required   pam_unix.so
+session    optional   pam_loginuid.so
+session    optional   pam_elogind.so
